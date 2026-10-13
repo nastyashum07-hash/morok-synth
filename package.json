@@ -1,0 +1,57 @@
+"""Подготовка двух CC0-записей. Вход: публичные MP3-превью Freesound."""
+from pathlib import Path
+import base64,json,subprocess,wave
+import numpy as np
+root=Path(__file__).resolve().parents[1]
+source=Path('/workspace/scratch/24b424e8593a/audio-research')
+out=root/'dist/assets/audio';out.mkdir(parents=True,exist_ok=True)
+entries={}
+for kind,ident,limit in [('drum',345630,2.2),('frame',345625,1.1)]:
+ raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(source/(kind+'.mp3')),'-af','highpass=f=35','-ar','44100','-ac','1','-f','f32le','-'])
+ x=np.frombuffer(raw,dtype='<f4').copy();rate=44100
+ # Убираем тишину перед ударом, сохраняя 2 мс до заметного сигнала.
+ peak=np.max(np.abs(x));start=max(0,int(np.flatnonzero(np.abs(x)>peak*.015)[0])-88)
+ x=x[start:start+int(limit*rate)];x*=.85/max(np.max(np.abs(x)),1e-9)
+ x[:44]*=np.linspace(0,1,44);fade=min(4410,len(x)//3);x[-fade:]*=np.linspace(1,0,fade)
+ pcm=(np.clip(x,-1,1)*32767).astype('<i2').tobytes()
+ filename=kind+'-recorded.wav'
+ with wave.open(str(out/filename),'wb') as f:f.setnchannels(1);f.setsampwidth(2);f.setframerate(rate);f.writeframes(pcm)
+ entries[kind]={'sampleRate':rate,'pcm':base64.b64encode(pcm).decode()}
+ print(kind, 'duration',round(len(x)/rate,3),'peak',round(float(np.max(np.abs(x))),3),'source',ident)
+module='''/** Реальные CC0-записи рамочного барабана: cabled_mess, Freesound 345630 / 345625.
+ * PCM встроен, чтобы звук работал без сети и в автономном HTML.
+ * Источники и обработка: assets/audio/CREDITS.md. */
+const recordings = '''+json.dumps(entries,separators=(',',':'))+''';
+export class RecordedSamples {
+  static create(context,kind) {
+    const recording=recordings[kind];if(!recording)return null;
+    const bytes=atob(recording.pcm), samples=bytes.length/2;
+    const buffer=context.createBuffer(1,samples,recording.sampleRate);
+    const channel=buffer.getChannelData(0);
+    // Знаковый PCM16 little-endian превращается в нормированный Float32.
+    for(let i=0;i<samples;i++) {
+      const word=bytes.charCodeAt(i*2)|(bytes.charCodeAt(i*2+1)<<8);
+      channel[i]=(word>=32768?word-65536:word)/32768;
+    }
+    return buffer;
+  }
+}
+'''
+(root/'dist/js/recorded-samples.js').write_text(module)
+(out/'CREDITS.md').write_text('''# Recorded percussion / записи ударных
+
+Author: cabled_mess. License: CC0 1.0.
+https://creativecommons.org/publicdomain/zero/1.0/
+
+- drum-recorded.wav — Frame drum_oneshot_RAW_10.wav, https://freesound.org/people/cabled_mess/sounds/345630/
+  Public HQ preview: https://cdn.freesound.org/previews/345/345630_5450487-hq.mp3
+- frame-recorded.wav — Frame drum_oneshot_RAW_05.wav, https://freesound.org/people/cabled_mess/sounds/345625/
+  Public HQ preview: https://cdn.freesound.org/previews/345/345625_5450487-hq.mp3
+
+Источник — общедоступные HQ MP3-превью записей, не оригинальные WAV 96 кГц.
+Обработка: highpass 35 Hz, mono 44.1 kHz, начало обрезано до 2 мс перед ударом,
+пиковая нормализация 0.85, короткие fade-in/fade-out, PCM16 WAV.
+PCM дублируется в recorded-samples.js для автономной работы без внешней сети.
+Это записи настоящего рамочного барабана, не звуки из «Клуба романтики».
+Пэд frame теперь играет второй удар того же типа барабана, а не бубен с бубенцами.
+''')

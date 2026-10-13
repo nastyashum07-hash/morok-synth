@@ -1,0 +1,48 @@
+/** Worker лишь будит планировщик. Время каждой ноты задаёт аудиочас currentTime. */
+export class Sequencer {
+  constructor(engine, pattern) {
+    this.engine=engine; this.pattern=pattern; this.bpm=80;
+    this.playing=false; this.queue=[]; this.step=0; this.next=0;
+    this.worker=null; this.timer=null; this.sampleKind='whisper';
+  }
+  start() {
+    if(this.playing) return;
+    this.playing=true;this.step=0;this.next=this.engine.context.currentTime+.06;
+    this.tick();
+    try {
+      const code=`let active=false;function tick(){if(!active)return;postMessage(0);setTimeout(tick,25)}onmessage=e=>{active=e.data;if(active)tick()}`;
+      const url=URL.createObjectURL(new Blob([code],{type:'text/javascript'}));
+      this.worker=new Worker(url);URL.revokeObjectURL(url);
+      this.worker.onmessage=()=>this.tick();
+      this.worker.onerror=()=>{this.worker?.terminate();this.worker=null;this.fallback();};
+      this.worker.postMessage(true);
+    } catch {this.fallback();}
+  }
+  fallback() {
+    clearTimeout(this.timer);
+    if(!this.playing)return;
+    this.tick();this.timer=setTimeout(()=>this.fallback(),25);
+  }
+  tick() {
+    if(!this.playing)return;
+    const now=this.engine.context.currentTime, length=60/this.bpm/4;
+    // Если вкладка надолго задержалась, пропускаем старые шаги без залпа нот.
+    if(this.next<now) {
+      const missed=Math.ceil((now-this.next)/length);
+      this.step=(this.step+missed)%16;this.next+=missed*length;
+    }
+    const notes=[73.416,73.416,110,73.416,87.307,73.416,65.406,73.416,73.416,110,87.307,73.416,65.406,65.406,55,65.406];
+    while(this.next<now+.18) {
+      const yav=this.pattern[0][this.step];
+      if(yav)this.engine.playYav(typeof yav==='string'?yav:'sawtooth',this.next,notes[this.step],length*.75);
+      const kind=this.pattern[1][this.step];
+      if(kind)this.engine.sample(typeof kind==='string'?kind:this.sampleKind,this.next);
+      this.queue.push({step:this.step,time:this.next});
+      this.step=(this.step+1)%16;this.next+=length;
+    }
+  }
+  stop() {
+    this.playing=false;this.worker?.terminate();this.worker=null;
+    clearTimeout(this.timer);this.queue=[];this.engine.stopVoices();
+  }
+}
